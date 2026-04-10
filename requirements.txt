@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+sqlalchemy
+mediapipe
+opencv-python
+mysql-connector-python

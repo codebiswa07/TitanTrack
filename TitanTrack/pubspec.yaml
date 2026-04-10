@@ -1,0 +1,50 @@
+name: workout_platform
+description: "A Flutter based AI Workout Platform with 5-level difficulty and rewards."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  meta: ^1.9.0
+  vector_math: ^2.2.0
+  win32: ^5.15.0
+  # 📱 Icons & UI
+  cupertino_icons: ^1.0.6
+  google_fonts: ^8.0.2
+  pose_detection: ^2.0.2
+
+  # ⚙️ Backend & State Management
+  http: ^1.1.0            # Connects to your FastAPI
+  provider: ^6.1.1        # Manages Rep counts & Points state
+  intl: ^0.20.2           # Date formatting for streaks
+
+  # 📸 AI & Camera (MediaPipe Logic)
+  camera: ^0.12.0+1
+  permission_handler: ^12.0.1
+  # Optional: google_ml_kit for on-device pose detection
+  google_ml_kit: ^0.21.0 
+
+  # 🏃 Running & GPS Tracking
+  geolocator: ^14.0.1
+  google_maps_flutter: ^2.5.0 # For the running.dart map view
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  # 🖼️ Assets for Level 1-5 Previews
+  assets:
+    - assets/exercises/
+    - assets/sounds/
+    - assets/images/
+    - assets/icons/
+    - .env # For API keys (if using flutter_dotenv)
