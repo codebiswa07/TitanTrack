@@ -1,4 +1,4 @@
-name: workout_platform
+name: TitanTrack
 description: "A Flutter based AI Workout Platform with 5-level difficulty and rewards."
 publish_to: 'none'
 version: 1.0.0+1
@@ -9,7 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-
+  camera: ^0.12.0+1
+  image_picker: ^1.0.7
   meta: ^1.9.0
   vector_math: ^2.2.0
   win32: ^5.15.0
@@ -24,7 +25,7 @@ dependencies:
   intl: ^0.20.2           # Date formatting for streaks
 
   # 📸 AI & Camera (MediaPipe Logic)
-  camera: ^0.12.0+1
+  # camera: ^0.12.0+1
   permission_handler: ^12.0.1
   # Optional: google_ml_kit for on-device pose detection
   google_ml_kit: ^0.21.0 

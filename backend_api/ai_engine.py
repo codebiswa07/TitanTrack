@@ -19,7 +19,7 @@ for arg in args:
     elif arg in ["Easy", "Medium", "Hard"]:
         DIFFICULTY = arg
 
-SYNC_URL = "http://127.0.0.1:8000/sync-workout"
+SYNC_URL = "https://slush-expulsion-scrooge.ngrok-free.dev/sync-workout"
 
 # --- 2. THRESHOLD CONFIGURATION ---
 CONFIG = {
