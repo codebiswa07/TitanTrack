@@ -1,198 +1,402 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session, relationship
 from datetime import datetime
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional
 from dotenv import load_dotenv
-import uvicorn
-import subprocess
 import os
+import hashlib
 
-# --- DATABASE CONFIG ---
+
 load_dotenv()
-# Your specific credentials for chiku
 DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL environment variable is not set")
 
-engine = create_engine(DATABASE_URL)
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is missing")
+
+# Supabase requires SSL. If your URL doesn't include it, add it automatically.
+if "sslmode=" not in DATABASE_URL:
+    separator = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL = f"{DATABASE_URL}{separator}sslmode=require"
+
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# ── ORM Models ────────────────────────────────────────────────────────────────
+
 class Base(DeclarativeBase):
     pass
 
-# --- MODELS ---
+
 class User(Base):
     __tablename__ = "users"
+
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(50), unique=True, nullable=False)
-    password = Column(String(100), nullable=False)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    password_hash = Column(String(64), nullable=False)
     security_answer = Column(String(255), nullable=False)
     profile_image = Column(String(255))
     total_points = Column(Float, default=0.0)
     calories_burned = Column(Float, default=0.0)
-    # Relationship to logs
-    logs = relationship("WorkoutLog", back_populates="owner")
+
+    logs = relationship("WorkoutLog", back_populates="owner", cascade="all, delete-orphan")
+    runs = relationship("RunningLog", back_populates="owner", cascade="all, delete-orphan")
+
 
 class WorkoutLog(Base):
     __tablename__ = "workout_logs"
+
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"))
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     exercise = Column(String(50))
     reps = Column(Integer)
+    difficulty = Column(String(20), default="Medium")
+    points = Column(Float, default=0.0)
+    calories = Column(Float, default=0.0)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    # Link back to user
+
     owner = relationship("User", back_populates="logs")
+
+
+class RunningLog(Base):
+    __tablename__ = "running_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    distance_meters = Column(Float, default=0.0)
+    duration_seconds = Column(Integer, default=0)
+    avg_speed_ms = Column(Float, default=0.0)
+    points = Column(Float, default=0.0)
+    calories = Column(Float, default=0.0)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="runs")
+
 
 Base.metadata.create_all(bind=engine)
 
-# --- SCHEMAS (Matches your Swagger UI screenshot) ---
+
+# ── Pydantic Schemas ──────────────────────────────────────────────────────────
+
 class AuthData(BaseModel):
     username: str
     password: str
     security_answer: Optional[str] = ""
+
 
 class ResetData(BaseModel):
     username: str
     answer: str
     new_password: str
 
+
 class WorkoutRequest(BaseModel):
     user_id: int
     exercise: str
     reps: int
+    difficulty: Optional[str] = "Medium"
+    points: Optional[float] = None
+    calories: Optional[float] = None
 
-# --- API ---
-app = FastAPI(title="Chiku AI Hero API")
-# 🟢 CRITICAL: CORS fix for Chrome
+
+class RunningRequest(BaseModel):
+    user_id: int
+    distance_meters: float
+    duration_seconds: int
+    avg_speed_ms: float
+    points: Optional[float] = None
+    calories: Optional[float] = None
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _hash(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _difficulty_multiplier(difficulty: str) -> float:
+    return {"Hard": 2.5, "Medium": 1.5, "Easy": 1.0}.get(difficulty, 1.0)
+
+
+def _workout_points(reps: int, difficulty: str) -> float:
+    return reps * 10.0 * _difficulty_multiplier(difficulty)
+
+
+def _workout_calories(reps: int, difficulty: str) -> float:
+    base = 0.8 if difficulty == "Hard" else 0.5
+    return reps * base
+
+
+def _running_points(distance_meters: float, avg_speed_ms: float) -> float:
+    if avg_speed_ms > 4.5:
+        multiplier = 3.0
+    elif avg_speed_ms > 2.5:
+        multiplier = 2.0
+    else:
+        multiplier = 1.0
+    return (distance_meters / 100.0) * multiplier
+
+
+def _running_calories(distance_meters: float) -> float:
+    return (distance_meters / 1000.0) * 60.0
+
+
+# ── App ───────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="TitanTrack AI API")
+
+origins = [
+    "https://codebiswa.github.io",
+    "http://localhost:3212",
+    "http://127.0.0.1:3212",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://codebiswa07.github.io",
-        "http://localhost:51707",
-        "http://localhost:3000",
-        "http://localhost:5000",
-        "http://127.0.0.1:51707",
-    ],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 def get_db():
     db = SessionLocal()
-    try: yield db
-    finally: db.close()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# 🛡️ AUTH ENDPOINTS
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def home():
+    return {"status": "TitanTrack API running with Supabase PostgreSQL"}
+
+
 @app.post("/register")
 def register(data: AuthData, db: Session = Depends(get_db)):
-    try:
-        # 1. Check if user exists
-        existing = db.query(User).filter(User.username == data.username).first()
-        if existing:
-            print(f"🚩 Denied: {data.username} already exists in DB.")
-            raise HTTPException(status_code=400, detail="Username taken")
+    if db.query(User).filter(User.username == data.username).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
 
-        # 2. Try to create the user
-        avatar = f"https://ui-avatars.com/api/?name={data.username}&background=00FF99&color=000"
-        new_user = User(
-            username=data.username, 
-            password=data.password, 
-            security_answer=data.security_answer, 
-            profile_image=avatar
-        )
-        
-        db.add(new_user)
-        db.commit()
-        print(f"✅ Success: {data.username} is now registered!")
-        return {"status": "success"}
+    avatar = (
+        f"https://ui-avatars.com/api/"
+        f"?name={data.username}&background=00FF99&color=000"
+    )
 
-    except Exception as e:
-        db.rollback()
-        print(f"❌ DATABASE CRASH: {str(e)}") # 👈 CHECK YOUR TERMINAL FOR THIS!
-        raise HTTPException(status_code=500, detail="Database Error")
+    user = User(
+        username=data.username,
+        password_hash=_hash(data.password),
+        security_answer=data.security_answer.lower().strip(),
+        profile_image=avatar,
+        total_points=0.0,
+        calories_burned=0.0,
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "user_id": user.id,
+        "username": user.username,
+    }
+
 
 @app.post("/login")
 def login(data: AuthData, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == data.username).first()
-    if not user: raise HTTPException(status_code=404, detail="Not Found")
-    if user.password != data.password: raise HTTPException(status_code=401, detail="Wrong Pass")
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.password_hash != _hash(data.password):
+        raise HTTPException(status_code=401, detail="Wrong password")
+
     return {
-        "user_id": user.id, 
-        "username": user.username, 
-        "profile_image": user.profile_image, 
-        "points": user.total_points, 
-        "calories": user.calories_burned
+        "user_id": user.id,
+        "username": user.username,
+        "profile_image": user.profile_image,
+        "points": user.total_points,
+        "calories": user.calories_burned,
     }
 
+
 @app.post("/reset-password")
-def reset(data: ResetData, db: Session = Depends(get_db)):
+def reset_password(data: ResetData, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == data.username).first()
-    if user and user.security_answer.lower() == data.answer.lower():
-        user.password = data.new_password
+
+    if user and user.security_answer == data.answer.lower().strip():
+        user.password_hash = _hash(data.new_password)
         db.commit()
         return {"status": "success"}
-    raise HTTPException(status_code=401, detail="Invalid Answer")
 
-# 📊 DATA ENDPOINTS (Needed for Dashboard)
+    raise HTTPException(status_code=401, detail="Invalid answer")
+
+
 @app.get("/user/{user_id}")
 def get_profile(user_id: int, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
-    if not user: raise HTTPException(status_code=404)
-    return {"total_points": user.total_points, "calories_burned": user.calories_burned}
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "username": user.username,
+        "profile_image": user.profile_image,
+        "total_points": user.total_points,
+        "calories_burned": user.calories_burned,
+    }
+
 
 @app.get("/user/{user_id}/history")
 def get_history(user_id: int, db: Session = Depends(get_db)):
-    return db.query(WorkoutLog).filter(WorkoutLog.user_id == user_id).order_by(WorkoutLog.id.desc()).all()
+    workouts = (
+        db.query(WorkoutLog)
+        .filter(WorkoutLog.user_id == user_id)
+        .order_by(WorkoutLog.timestamp.desc())
+        .limit(50)
+        .all()
+    )
 
-# 🦾 AI ENGINE SYNC
+    runs = (
+        db.query(RunningLog)
+        .filter(RunningLog.user_id == user_id)
+        .order_by(RunningLog.timestamp.desc())
+        .limit(20)
+        .all()
+    )
+
+    workout_entries = [
+        {
+            "type": "workout",
+            "exercise": w.exercise,
+            "reps": w.reps,
+            "difficulty": w.difficulty,
+            "points": w.points,
+            "calories": w.calories,
+            "timestamp": w.timestamp.isoformat() if w.timestamp else None,
+        }
+        for w in workouts
+    ]
+
+    run_entries = [
+        {
+            "type": "running",
+            "exercise": "Running",
+            "distance_meters": r.distance_meters,
+            "duration_seconds": r.duration_seconds,
+            "avg_speed_ms": r.avg_speed_ms,
+            "points": r.points,
+            "calories": r.calories,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+        }
+        for r in runs
+    ]
+
+    return sorted(
+        workout_entries + run_entries,
+        key=lambda x: x["timestamp"] or "",
+        reverse=True,
+    )
+
+
 @app.post("/sync-workout")
 def sync_workout(data: WorkoutRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == data.user_id).first()
-    if not user: raise HTTPException(status_code=404)
-    
-    # Update Stats
-    user.total_points += (data.reps * 10.5)
-    user.calories_burned += (data.reps * 0.5)
-    
-    # Save Log
-    new_log = WorkoutLog(user_id=data.user_id, exercise=data.exercise, reps=data.reps)
-    db.add(new_log); db.commit()
-    return {"new_balance": user.total_points, "calories": user.calories_burned}
 
-@app.get("/launch-ai")
-def launch_ai(exercise: str, difficulty: str, user_id: int):
-    print("=== LAUNCH AI CALLED ===")
-    print(f"Exercise: {exercise}")
-    print(f"Difficulty: {difficulty}")
-    print(f"User ID: {user_id}")
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    try:
-        script_path = os.path.join(os.getcwd(), "ai_engine.py")
-        print(f"Script path: {script_path}")
-        print(f"File exists: {os.path.exists(script_path)}")
+    earned_points = data.points if data.points is not None else _workout_points(data.reps, data.difficulty)
+    earned_calories = data.calories if data.calories is not None else _workout_calories(data.reps, data.difficulty)
 
-        subprocess.Popen([
-            "python",
-            script_path,
-            str(user_id),
-            exercise,
-            difficulty
-        ])
+    user.total_points = (user.total_points or 0.0) + earned_points
+    user.calories_burned = (user.calories_burned or 0.0) + earned_calories
 
-        print("AI Engine started successfully")
+    log = WorkoutLog(
+        user_id=data.user_id,
+        exercise=data.exercise,
+        reps=data.reps,
+        difficulty=data.difficulty,
+        points=earned_points,
+        calories=earned_calories,
+    )
 
-        return {
-            "status": "started",
-            "message": f"AI Engine active for {exercise}"
+    db.add(log)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "new_points": user.total_points,
+        "calories": user.calories_burned,
+    }
+
+
+@app.post("/sync-running")
+def sync_running(data: RunningRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    earned_points = data.points if data.points is not None else _running_points(data.distance_meters, data.avg_speed_ms)
+    earned_calories = data.calories if data.calories is not None else _running_calories(data.distance_meters)
+
+    user.total_points = (user.total_points or 0.0) + earned_points
+    user.calories_burned = (user.calories_burned or 0.0) + earned_calories
+
+    log = RunningLog(
+        user_id=data.user_id,
+        distance_meters=data.distance_meters,
+        duration_seconds=data.duration_seconds,
+        avg_speed_ms=data.avg_speed_ms,
+        points=earned_points,
+        calories=earned_calories,
+    )
+
+    db.add(log)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "success",
+        "distance_km": round(data.distance_meters / 1000, 2),
+        "earned_points": round(earned_points, 2),
+        "earned_calories": round(earned_calories, 2),
+        "new_points": user.total_points,
+    }
+
+
+@app.get("/leaderboard")
+def leaderboard(limit: int = 10, db: Session = Depends(get_db)):
+    top = (
+        db.query(User)
+        .order_by(User.total_points.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "rank": i + 1,
+            "username": u.username,
+            "profile_image": u.profile_image,
+            "total_points": u.total_points,
+            "calories": u.calories_burned,
         }
-
-    except Exception as e:
-        print("ERROR:", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        for i, u in enumerate(top)
+    ]
