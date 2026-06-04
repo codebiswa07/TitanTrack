@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session, relationship
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,10 +12,11 @@ import os
 
 # --- DATABASE CONFIG ---
 # Your specific credentials for chiku
-DATABASE_URL = "mysql+mysqlconnector://root:chiku222@127.0.0.1:3306/ai_workout_db"
+DATABASE_URL = "mysql+pymysql://root:chiku222@127.0.0.1:3306/ai_workout_db"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+class Base(DeclarativeBase):
+    pass
 
 # --- MODELS ---
 class User(Base):
@@ -60,11 +61,16 @@ class WorkoutRequest(BaseModel):
 
 # --- API ---
 app = FastAPI(title="Chiku AI Hero API")
-
 # 🟢 CRITICAL: CORS fix for Chrome
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://codebiswa07.github.io",
+        "http://localhost:51707",
+        "http://localhost:3000",
+        "http://localhost:5000",
+        "http://127.0.0.1:51707",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -154,18 +160,33 @@ def sync_workout(data: WorkoutRequest, db: Session = Depends(get_db)):
 
 @app.get("/launch-ai")
 def launch_ai(exercise: str, difficulty: str, user_id: int):
+    print("=== LAUNCH AI CALLED ===")
+    print(f"Exercise: {exercise}")
+    print(f"Difficulty: {difficulty}")
+    print(f"User ID: {user_id}")
+
     try:
-        # This command runs your ai_engine script as a separate process
-        # Use 'python' or 'python3' depending on your environment
         script_path = os.path.join(os.getcwd(), "ai_engine.py")
-        
+        print(f"Script path: {script_path}")
+        print(f"File exists: {os.path.exists(script_path)}")
+
         subprocess.Popen([
-            "python", script_path, 
-            str(user_id), exercise, difficulty
+            "python",
+            script_path,
+            str(user_id),
+            exercise,
+            difficulty
         ])
-        
-        return {"status": "started", "message": f"AI Engine active for {exercise}"}
+
+        print("AI Engine started successfully")
+
+        return {
+            "status": "started",
+            "message": f"AI Engine active for {exercise}"
+        }
+
     except Exception as e:
+        print("ERROR:", str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
