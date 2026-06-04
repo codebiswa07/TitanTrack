@@ -154,7 +154,7 @@ def _running_calories(distance_meters: float) -> float:
 app = FastAPI(title="TitanTrack AI API")
 
 origins = [
-    "https://codebiswa.github.io",
+    "https://codebiswa07.github.io",
     "http://localhost:3212",
     "http://127.0.0.1:3212",
     "http://localhost:8000",
