@@ -6,13 +6,18 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session, relationship
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
+from dotenv import load_dotenv
 import uvicorn
 import subprocess
 import os
 
 # --- DATABASE CONFIG ---
+load_dotenv()
 # Your specific credentials for chiku
-DATABASE_URL = "mysql+pymysql://root:chiku222@127.0.0.1:3306/ai_workout_db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is not set")
+
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 class Base(DeclarativeBase):
