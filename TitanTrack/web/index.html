@@ -1,46 +1,183 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
+
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TitanTrack</title>
+  <base href="/" />
+
   <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
+    Flutter tries to fetch Roboto from fonts.gstatic.com at startup.
+    If that domain is blocked or slow the entire app hangs.
+    Declaring the font locally with font-display:swap means Flutter uses
+    the system sans-serif instantly and only swaps in Roboto if/when it loads.
   -->
-  <base href="$FLUTTER_BASE_HREF">
+  <style>
+    @font-face {
+      font-family: 'Roboto';
+      font-style: normal;
+      font-weight: 400;
+      font-display: swap;
+      src: local('Roboto'), local('Arial');
+    }
 
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+    @font-face {
+      font-family: 'Roboto';
+      font-style: normal;
+      font-weight: 700;
+      font-display: swap;
+      src: local('Roboto'), local('Arial');
+    }
+  </style>
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="mobile_desktop_app">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <!-- TensorFlow.js + MoveNet (Pose Detection) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      background: #0A0A0A;
+      overflow: hidden;
+      height: 100%;
+    }
 
-  <title>mobile_desktop_app</title>
-  <link rel="manifest" href="manifest.json">
+    #video-container {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+    }
+
+    #workout-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+  </style>
 </head>
-<body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
+<body>
+  <div id="video-container">
+    <video id="workout-video" autoplay playsinline muted></video>
+  </div>
+  <script>
+    window.flutterConfiguration = {
+      fontFallback: true,
+    };
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+    // ─────────────────────────────────────────────────────────────────
+    // CHIKU AI GYM — Pose Detection Bridge (TF.js MoveNet → Flutter)
+    // ─────────────────────────────────────────────────────────────────
+    window.poseDetector = (function () {
+      let detector = null;
+      let videoEl = null;
+      let stream = null;
+      let rafId = null;
+      let onPoseCallback = null; // set by Flutter via JS interop
+      let isRunning = false;
+
+      // Named keypoints from MoveNet (COCO 17-point format)
+      // Index → name mapping matches MoveNet output
+      const KP_NAMES = [
+        'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
+        'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
+        'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+        'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+      ];
+
+      async function init() {
+        if (detector) return;
+        await tf.ready();
+        detector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+            enableSmoothing: true,
+          }
+        );
+        videoEl = document.getElementById('workout-video');
+      }
+
+      async function startCamera() {
+        try {
+          videoEl = document.getElementById('workout-video');
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false,
+          });
+
+          videoEl.srcObject = stream;
+
+          await videoEl.play();
+
+          document.getElementById('video-container').style.display = 'block';
+
+          await init();
+
+          isRunning = true;
+          _loop();
+
+          return 'ok';
+        } catch (e) {
+          console.error("Camera start failed:", e);
+          return 'error:' + e.message;
+        }
+      }
+
+      async function _loop() {
+        if (!isRunning || !detector || !videoEl) return;
+        try {
+          const poses = await detector.estimatePoses(videoEl);
+          if (poses && poses.length > 0 && onPoseCallback) {
+            // Build a plain JS object: { keypoints: [{name, x, y, score},...] }
+            const kps = poses[0].keypoints.map(kp => ({
+              name: kp.name,
+              x: kp.x,
+              y: kp.y,
+              score: kp.score || 0,
+            }));
+            onPoseCallback(JSON.stringify({ keypoints: kps }));
+          }
+        } catch (_) { }
+        rafId = requestAnimationFrame(_loop);
+      }
+
+      function stopCamera() {
+        isRunning = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        stream = null;
+        document.getElementById('video-container').style.display = 'none';
+      }
+
+      function setOnPose(cb) {
+        onPoseCallback = cb;
+      }
+
+      // Returns the video element's current dimensions (used for Flutter overlay math)
+      function getVideoDimensions() {
+        if (!videoEl) return JSON.stringify({ width: 640, height: 480 });
+        return JSON.stringify({ width: videoEl.videoWidth || 640, height: videoEl.videoHeight || 480 });
+      }
+
+      return { startCamera, stopCamera, setOnPose, getVideoDimensions };
+    })();
+  </script>
 </body>
+
 </html>
